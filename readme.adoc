@@ -1,4 +1,4 @@
-= bisync
+= bisyncd
 
 Keep in sync a local copy of Google Drive, _etc._, via Rclone & Systemd
 
