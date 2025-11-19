@@ -1,0 +1,301 @@
+#!/usr/bin/env python3
+import argparse
+import configparser
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+
+
+# FIXME: .path can only watch top-level directory not recursively
+
+# FIXME: would be nice to see log of files sync'd
+
+
+THIS_PATH = os.path.abspath(__file__)
+
+RCLONE_PATH = shutil.which('rclone')
+SYSTEMCTL_PATH = shutil.which('systemctl')
+SYS_ESCAPE_PATH = shutil.which('systemd-escape')
+EXEC_PATHS = (RCLONE_PATH, SYSTEMCTL_PATH, SYS_ESCAPE_PATH)
+EXECUTABLES = (*zip(['rclone', 'systemctl', 'systemd-escape'], EXEC_PATHS),)
+
+CONFIG_DIR = os.getenv('XDG_CONFIG_HOME', os.path.join(pathlib.Path.home(), '.config'))
+CONFIG_PATH = pathlib.Path(CONFIG_DIR, 'bisync.conf')
+
+DESCRIPTION = """\
+Keep in sync a local copy of Google Drive, etc., via Rclone & Systemd
+"""
+
+
+class UnitFile:
+
+    resource = os.path.basename(__file__)
+    dirpath = pathlib.Path(CONFIG_DIR, 'systemd', 'user')
+
+    def __init__(self, suffix, content):
+        self.content = content
+        self.suffix = suffix
+
+    def __repr__(self):
+        snippet = self.content if len(self.content) < 70 else self.content[:65] + ' ...'
+        return f'{self.__class__.__name__}({self.suffix!r}, {{!r}})'.format(snippet)
+
+    def __str__(self):
+        return self.content
+
+    @property
+    def path(self):
+        return self.dirpath / f'{self.resource}@.{self.suffix}'
+
+    def install(self):
+        self.dirpath.mkdir(parents=True, exist_ok=True)
+        mismatch = not self.path.exists() or self.path.read_text() != self.content
+        if mismatch:
+            self.path.write_text(self.content)
+        return mismatch
+
+    def instance(self, value):
+        return f'{self.resource}@{value}.{self.suffix}'
+
+
+SERVICE_UNIT = UnitFile('service', f"""\
+[Unit]
+Description=syncs local files with a cloud service via rclone bisync
+Documentation=man:rclone(1)
+After=network-online.target
+Wants=network-online.target 
+StartLimitIntervalSec=60
+StartLimitBurst=1
+
+[Service]
+Type=oneshot
+ExecStart={THIS_PATH} sync --log-systemd %f
+
+[Install]
+WantedBy=default.target
+""")
+
+TIMER_UNIT = UnitFile('timer', """\
+[Unit]  
+Description=periodic trigger of cloud sync with local directory
+
+[Timer]
+OnUnitInactiveSec=7min
+Persistent=true
+ 
+[Install]
+WantedBy=default.target
+""")
+
+PATH_UNIT = UnitFile('path', """\
+[Path]
+PathChanged=%f
+
+[Install]
+WantedBy=default.target
+""")
+
+UNIT_FILES = (
+    SERVICE_UNIT,
+    TIMER_UNIT,
+    PATH_UNIT,
+)
+
+STATUS_UNITS_DEFAULT = frozenset(('service', 'timer'))
+
+
+def main(argv=sys.argv):
+    parser = argparse.ArgumentParser(description=DESCRIPTION)
+    commands = parser.add_subparsers(title="commands", help="supported commands")
+
+    # TODO: need to set description= just like help=
+    p_setup = commands.add_parser('setup', help="set up automatic sync")
+    p_setup.set_defaults(func=setup)
+
+    p_enable = commands.add_parser('enable', aliases=['e'], help="enable a sync automation")
+    p_enable.add_argument('local', help="path to local copy to sync")
+    p_enable.add_argument('remote', nargs='?',
+                          help="rclone configured remote to sync (defaults to local name)")
+    p_enable.set_defaults(func=enable)
+
+    p_status = commands.add_parser('status', aliases=['s'], help="report status")
+    p_status.add_argument('local', help="path to local copy kept in sync")
+    p_status.add_argument('-u', '--unit',
+                          action='append',
+                          choices=[unit.suffix for unit in UNIT_FILES],
+                          dest='units',
+                          help="unit resource(s) to query (default: {})"
+                               .format(', '.join(STATUS_UNITS_DEFAULT)))
+    p_status.set_defaults(func=status)
+
+    p_sync = commands.add_parser('sync',
+                                 help="sync the contents of a remote with the given local path")
+    p_sync.add_argument('local', help="path to local copy to sync")
+    p_sync.add_argument('remote', nargs='?',
+                          help="rclone configured remote to sync (default set in bisync.conf)")
+    p_sync.add_argument('--log-systemd', action='store_true')
+    p_sync.set_defaults(func=sync)
+
+    args = parser.parse_args(argv[1:])
+    kwds = {key: value for (key, value) in vars(args).items() if key != 'func'}
+
+    exitcode = args.func(parser, **kwds)
+    sys.exit(exitcode)
+
+
+def _setup_exec(parser):
+    for (name, path) in EXECUTABLES:
+        if path is None:
+            print(f'{parser.prog}: error: {name} not found', file=sys.stderr)
+        else:
+            print(f'{parser.prog}: {path}: found', file=sys.stdout)
+
+    return EXEC_PATHS
+
+
+def _setup_units(parser):
+    for unit_file in UNIT_FILES:
+        installed = unit_file.install()
+        print(f'{parser.prog}: {unit_file.path}:', 'installed' if installed else 'all good', file=sys.stdout)
+        yield installed
+
+
+def setup(parser):
+    """check environment, install systemd unit files, remove stale unit files"""
+    if not all(list(_setup_exec(parser))):
+        return 1
+
+    try:
+        installed = any(list(_setup_units(parser)))
+    except OSError:
+        print(f'{parser.prog}: error: insufficient access to path', UnitFile.dirpath, file=sys.stderr)
+        return 1
+
+    if installed:
+        process = subprocess.run([
+            SYSTEMCTL_PATH,
+            '--user',
+            'daemon-reload',
+        ])
+        return process.returncode
+
+    return 0
+
+
+def _escape_name(local):
+    process = subprocess.run(
+        [
+            SYS_ESCAPE_PATH,
+            '--path',
+            local,
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    return process.stdout.rstrip()
+
+
+def enable(parser, local, remote=None):
+    if SYSTEMCTL_PATH is None:
+        print(f'{parser.prog}: error: systemctl not found', file=sys.stderr)
+        return 127
+
+    config = configparser.ConfigParser()
+    config.read(CONFIG_PATH)
+    options = config.setdefault(os.path.normpath(local), {})
+    if remote is not None:
+        options['remote'] = remote
+
+    try:
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with CONFIG_PATH.open('w') as config_file:
+            config.write(config_file)
+    except OSError:
+        print(f'{parser.prog}: error: insufficient access to path', CONFIG_DIR, file=sys.stderr)
+        return 1
+
+    try:
+        name = _escape_name(local)
+    except subprocess.CalledProcessError as exc:
+        return exc.returncode
+
+    process = subprocess.run([
+        SYSTEMCTL_PATH,
+        '--user',
+        'enable',
+        '--now',
+        *(unit.instance(name) for unit in UNIT_FILES)
+    ])
+    return process.returncode
+
+
+def status(parser, local, units=None):
+    if units is None:
+        units = STATUS_UNITS_DEFAULT
+
+    try:
+        name = _escape_name(local)
+    except subprocess.CalledProcessError as exc:
+        return exc.returncode
+
+    process = subprocess.run([
+        SYSTEMCTL_PATH,
+        '--user',
+        'status',
+        *(unit.instance(name) for unit in UNIT_FILES if unit.suffix in units)
+    ])
+    return process.returncode
+
+
+def sync(parser, local, remote=None, log_systemd=False):
+    """bisync a local directory with a remote via rclone"""
+    if RCLONE_PATH is None:
+        print(f'{parser.prog}: error: rclone not found', file=sys.stderr)
+        return 127
+
+    if remote is None:
+        config = configparser.ConfigParser()
+        config.read(CONFIG_PATH)
+        remote = config.get(os.path.normpath(local), 'remote', fallback=os.path.basename(local))
+
+    args = [RCLONE_PATH, 'bisync']
+
+    if log_systemd:
+        args.extend((
+            '--log-systemd',
+            '--log-level', 'INFO',
+        ))
+
+    args.extend((
+        '--stats-one-line',
+        '--stats-log-level', 'NOTICE',
+        '--create-empty-src-dirs',
+        '--compare', 'size,modtime,checksum',
+        '--slow-hash-sync-only',
+        '--resilient',
+        '--recover',
+        '--conflict-resolve', 'newer',
+        '--conflict-suffix', '-CONFLICT-remote-{DateOnly}T{TimeOnly},-CONFLICT-local-{DateOnly}T{TimeOnly}',
+        '--suffix-keep-extension',
+        '--drive-skip-gdocs',
+        '--fix-case',
+        '-MP',
+        f'{remote}:',
+        local,
+    ))
+
+    output = subprocess.DEVNULL if log_systemd else None
+
+    process = subprocess.run(
+        args,
+        stdout=output,
+        stderr=output,
+    )
+    return process.returncode
+
+
+if __name__ == '__main__':
+    main()
