@@ -51,7 +51,7 @@ rclone config
 
 === Systemd
 
-The bisync executable provides Systemd configuration to keep your files in sync.
+The bisyncd `bisync` executable provides Systemd configuration to keep your files in sync.
 
 Download the file anywhere on your system and mark it executable.
 
@@ -87,14 +87,14 @@ bisync setup
 
 == Sync
 
-To keep a local directory in sync with a remote cloud service, use the bisync subcommand `enable`, for example:
+To keep a local directory in sync with a remote cloud service, use the `bisync` subcommand `enable`, for example:
 
 [source,sh]
 ----
 bisync enable ~/gdrive
 ----
 
-The above assumes that a Rclone remote has been configured under the name `gdrive`. This service's files will be kept in sync with files under the user home directory `gdrive`.
+The above assumes that a Rclone remote has been configured under the name `gdrive`. This cloud service's files will be kept in sync with files under the user home directory `gdrive`.
 
 To specify another Rclone remote name, for example:
 
