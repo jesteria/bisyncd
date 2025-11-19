@@ -1,0 +1,104 @@
+= bisync
+
+Keep in sync a local copy of Google Drive, _etc._, via Rclone & Systemd
+
+== Setup
+
+=== Prerequisites
+
+This service is intended for Linux computers using Systemd.
+
+It is also assumed that the computer features Python v3.
+
+Unsure? Most major distributions do.
+
+=== Rclone
+
+This service uses Rclone's `bisync` command to sync the "remote" contents of a cloud service with a "local" directory and vice-versa.
+
+As such Rclone version 1.58.0 or later is required.
+
+To confirm the version of Rclone installed:
+
+[source,sh]
+----
+rclone --version
+----
+
+For example:
+
+[source,console]
+----
+$ rclone --version
+rclone v1.71.2
+- os/version: debian bookworm/sid (64 bit)
+- os/kernel: 6.12.10-76061203-generic (x86_64)
+- os/type: linux
+- os/arch: amd64
+- go/version: go1.25.3
+- go/linking: static
+- go/tags: none
+----
+
+It's also necessary to configure Rclone for access to your cloud service(s).
+
+To launch an interactive wizard:
+
+[source,sh]
+----
+rclone config
+----
+
+=== Systemd
+
+The bisync executable provides Systemd configuration to keep your files in sync.
+
+Download the file anywhere on your system and mark it executable.
+
+A global installation might require `root` privilege (and as such `sudo`):
+
+[source,sh]
+----
+sudo curl -LO --output-dir /usr/local/bin/ https://github.com/jesteria/bisyncd/raw/main/bisync
+sudo chmod +x /usr/local/bin/bisync
+----
+
+Typical user directories alternatively include `~/bin/` and `~/.local/bin/`:
+
+[source,sh]
+----
+curl -LO --output-dir ~/.local/bin/ https://github.com/jesteria/bisyncd/raw/main/bisync
+chmod +x ~/.local/bin/bisync
+----
+
+Regardless of the installation path chosen above, the below assumes that you selected a directory in your `PATH`:
+
+[source,sh]
+----
+echo $PATH
+----
+
+To set up Systemd automation:
+
+[source,sh]
+----
+bisync setup
+----
+
+== Sync
+
+To keep a local directory in sync with a remote cloud service, use the bisync subcommand `enable`, for example:
+
+[source,sh]
+----
+bisync enable ~/gdrive
+----
+
+The above assumes that a Rclone remote has been configured under the name `gdrive`. This service's files will be kept in sync with files under the user home directory `gdrive`.
+
+To specify another Rclone remote name, for example:
+
+[source,sh]
+----
+bisync enable ~/gdrive personal-drive
+----
