@@ -281,6 +281,7 @@ def sync(parser, local, remote=None, log_systemd=False):
         '--conflict-suffix', '-CONFLICT-remote-{DateOnly}T{TimeOnly},-CONFLICT-local-{DateOnly}T{TimeOnly}',
         '--suffix-keep-extension',
         '--drive-skip-gdocs',
+        '--drive-skip-dangling-shortcuts',
         '--fix-case',
         '-MP',
         f'{remote}:',
